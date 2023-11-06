@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -28,8 +29,12 @@
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
+typedef StaticTask_t osStaticThreadDef_t;
+typedef StaticQueue_t osStaticMessageQDef_t;
 /* USER CODE BEGIN PTD */
-
+typedef struct {
+	char TxBuf[128];
+} QUEUE_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -51,12 +56,71 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+uint32_t defaultTaskBuffer[ 128 ];
+osStaticThreadDef_t defaultTaskControlBlock;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .cb_mem = &defaultTaskControlBlock,
+  .cb_size = sizeof(defaultTaskControlBlock),
+  .stack_mem = &defaultTaskBuffer[0],
+  .stack_size = sizeof(defaultTaskBuffer),
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for LED1Task */
+osThreadId_t LED1TaskHandle;
+uint32_t LED1TaskBuffer[ 128 ];
+osStaticThreadDef_t LED1TaskControlBlock;
+const osThreadAttr_t LED1Task_attributes = {
+  .name = "LED1Task",
+  .cb_mem = &LED1TaskControlBlock,
+  .cb_size = sizeof(LED1TaskControlBlock),
+  .stack_mem = &LED1TaskBuffer[0],
+  .stack_size = sizeof(LED1TaskBuffer),
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for FlagBTN1Task */
+osThreadId_t FlagBTN1TaskHandle;
+uint32_t LED2TaskBuffer[ 128 ];
+osStaticThreadDef_t LED2TaskControlBlock;
+const osThreadAttr_t FlagBTN1Task_attributes = {
+  .name = "FlagBTN1Task",
+  .cb_mem = &LED2TaskControlBlock,
+  .cb_size = sizeof(LED2TaskControlBlock),
+  .stack_mem = &LED2TaskBuffer[0],
+  .stack_size = sizeof(LED2TaskBuffer),
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for UARTTask */
+osThreadId_t UARTTaskHandle;
+uint32_t UARTTaskBuffer[ 128 ];
+osStaticThreadDef_t UARTTaskControlBlock;
+const osThreadAttr_t UARTTask_attributes = {
+  .name = "UARTTask",
+  .cb_mem = &UARTTaskControlBlock,
+  .cb_size = sizeof(UARTTaskControlBlock),
+  .stack_mem = &UARTTaskBuffer[0],
+  .stack_size = sizeof(UARTTaskBuffer),
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for UARTQueue */
+osMessageQueueId_t UARTQueueHandle;
+uint8_t UARTQueueBuffer[ 10 * sizeof( QUEUE_t ) ];
+osStaticMessageQDef_t UARTQueueControlBlock;
+const osMessageQueueAttr_t UARTQueue_attributes = {
+  .name = "UARTQueue",
+  .cb_mem = &UARTQueueControlBlock,
+  .cb_size = sizeof(UARTQueueControlBlock),
+  .mq_mem = &UARTQueueBuffer,
+  .mq_size = sizeof(UARTQueueBuffer)
+};
 /* USER CODE BEGIN PV */
 struct Stored_LEDs
 {
-    uint8_t LEDArray1:NUM_LED;
+    uint8_t stateLEDArray1:NUM_LED;
 	uint8_t ModeLED1:1;
-    uint8_t RefreshRateLED;
+	uint16_t RefreshRateLED;
 } SLED;
 
 struct State_User_Buttons
@@ -64,13 +128,6 @@ struct State_User_Buttons
 	uint8_t stateUB1:2;
 	uint8_t flagUB1:1;
 } SUB;
-
-typedef struct {
-    void (*taskFunction)(void);  // Указатель на функцию, которую нужно выполнить.
-    uint32_t period;             // Период выполнения задачи (в миллисекундах).
-    uint32_t lastExecutionTime;  // Время последнего выполнения задачи (в миллисекундах).
-} Task;
-
 // Массив поддерживаемых команд и соответствующих текстов ошибок.
 const char *commands[] = { "f="};
 const char *errorMessages[] = {
@@ -81,7 +138,6 @@ const char *completedMessages[] = {
 };
 uint8_t TxBuf[TxBuf_SIZE];
 uint8_t RxBuf[RxBuf_SIZE];
-Task tasks[MAX_TASKS];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -89,6 +145,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
+void StartDefaultTask(void *argument);
+void StartLED1Task(void *argument);
+void StartFlagBTN1Task(void *argument);
+void StartUARTTask(void *argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -97,12 +158,12 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN 0 */
 // Функция для выполнения кольцевого сдвига битов влево и возвращения числа
 void circularLeftShiftLEDByte(struct Stored_LEDs* SLED) {
-    SLED->LEDArray1 = (SLED->LEDArray1 << Shift_Amount) | (SLED->LEDArray1 >> (4 - Shift_Amount));
+    SLED->stateLEDArray1 = (SLED->stateLEDArray1 << Shift_Amount) | (SLED->stateLEDArray1 >> (4 - Shift_Amount));
 }
 
 // Функция для извлечения определенного бита из поля x
 uint8_t getLEDByte(struct Stored_LEDs* SLED, uint8_t bitIndex) {
-    return (SLED->LEDArray1 >> bitIndex) & 1;
+    return (SLED->stateLEDArray1 >> bitIndex) & 1;
 }
 
 void ToggleLEDByte(struct Stored_LEDs* SLED)
@@ -111,31 +172,6 @@ void ToggleLEDByte(struct Stored_LEDs* SLED)
 	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, getLEDByte(SLED, 2));
 	HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, getLEDByte(SLED, 1));
 	HAL_GPIO_WritePin(LED4_GPIO_Port, LED4_Pin, getLEDByte(SLED, 0));
-}
-
-void task1Function(void) {
-	circularLeftShiftLEDByte(&SLED);
-	ToggleLEDByte(&SLED);
-}
-
-void task2Function(void) {
-    if(SUB.flagUB1 == 1){
-    	SLED.ModeLED1 ^= 1;
-    	SLED.ModeLED1?(SLED.LEDArray1 = 8):(SLED.LEDArray1 = 10);
-    	SUB.flagUB1 = 0;
-    	task1Function();
-    }
-}
-
-void TaskScheduler(Task* tasks, int numTasks) {
-    while (1) {
-        for (int i = 0; i < numTasks; i++) {
-            if (HAL_GetTick() - tasks[i].lastExecutionTime >= tasks[i].period) {
-                tasks[i].taskFunction();  // Выполнить задачу.
-                tasks[i].lastExecutionTime = HAL_GetTick();  // Обновить время последнего выполнения.
-            }
-        }
-    }
 }
 
 /* USER CODE END 0 */
@@ -173,23 +209,59 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
   __HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
-  SLED.RefreshRateLED = 10;
-  SLED.LEDArray1 = 10;
+  SLED.RefreshRateLED = 1000;
+  SLED.stateLEDArray1 = 10;
 
-  // Инициализация микроконтроллера и других компонентов.
-  tasks[0].taskFunction = task1Function;
-  tasks[0].period = 1000;
-  tasks[0].lastExecutionTime = HAL_GetTick();
-
-  tasks[1].taskFunction = task2Function;
-  tasks[1].period = 500;
-  tasks[1].lastExecutionTime = HAL_GetTick();
-
-  // Запустить диспетчер задач.
-  TaskScheduler(tasks, 2);
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
 
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* creation of UARTQueue */
+  UARTQueueHandle = osMessageQueueNew (10, sizeof(QUEUE_t), &UARTQueue_attributes);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of LED1Task */
+  LED1TaskHandle = osThreadNew(StartLED1Task, NULL, &LED1Task_attributes);
+
+  /* creation of FlagBTN1Task */
+  FlagBTN1TaskHandle = osThreadNew(StartFlagBTN1Task, NULL, &FlagBTN1Task_attributes);
+
+  /* creation of UARTTask */
+  UARTTaskHandle = osThreadNew(StartUARTTask, NULL, &UARTTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -214,11 +286,11 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
@@ -293,10 +365,10 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
   /* DMA1_Channel7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
@@ -322,7 +394,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : BTN1_Pin */
   GPIO_InitStruct.Pin = BTN1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(BTN1_GPIO_Port, &GPIO_InitStruct);
 
@@ -334,7 +406,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -368,25 +440,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	}
 }
 
-/* Функцию UART TX --------------------------------------------------------------*/
-void UART_TX_Triger(char *strTx){
-    if (strlen(strTx) != 0) {
-        HAL_UART_Transmit_DMA(&huart2, (uint8_t*)strTx, strlen(strTx));
-    }
-}
-
 void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
+	QUEUE_t msg;
 	int commandIndex = -1;
-
     // Преобразуйте все символы входной строки в нижний регистр для нечувствительности к регистру.
     for (int i = 0; strRx[i]; i++) {
         strRx[i] = tolower(strRx[i]);
     }
 
-    size_t numCommands = sizeof(commands) / sizeof(commands[0]);
+    uint8_t numCommands = sizeof(commands) / sizeof(commands[0]);
 
     // Найдите индекс соответствующей команды.
-    for (size_t i = 0; i < numCommands; i++) {
+    for (uint8_t i = 0; i < numCommands; i++) {
         if (strncmp(strRx, commands[i], strlen(commands[i])) == 0) {
             commandIndex = i;
             break;
@@ -399,17 +464,18 @@ void String_Comp(char *strRx, char *strTx, struct Stored_LEDs* SLED) {
         	char *endPtr;
         	double frequency = strtod(strRx + 2, &endPtr);
         	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
-        		tasks[0].period = (uint16_t)(frequency*1000);
-        		sprintf(strTx, completedMessages[commandIndex], frequency);
+        		SLED->RefreshRateLED = (uint16_t)(frequency*1000);
+        		sprintf(msg.TxBuf, completedMessages[commandIndex], frequency);
             return;
-            } else strcat(strTx, errorMessages[commandIndex]);
+            } else strcpy(msg.TxBuf, errorMessages[commandIndex]);
         } break;
 
         default:
             // Выведите текст ошибки, если ни одна из команд не совпала.
-        	strcat(strTx, "Invalid command. Supported commands: 'F=x.x'\n");
+        	strcpy(msg.TxBuf, "Invalid command. Supported commands: 'F=x.x'\n");
         break;
     }
+    osMessageQueuePut(UARTQueueHandle, &msg, 0, 0);
 }
 
 /* Функцию обратного вызова UART RX IDLE ------------------------------------------*/
@@ -418,7 +484,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 	if (huart->Instance == USART2)
 	{
 		String_Comp((char*)RxBuf,(char*)TxBuf,&SLED);
-		UART_TX_Triger((char*)TxBuf);
 		memset (RxBuf, 0, RxBuf_SIZE);
 		HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
 		__HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
@@ -435,6 +500,109 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 	}
 }
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1000);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartLED1Task */
+/**
+* @brief Function implementing the LED1Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartLED1Task */
+void StartLED1Task(void *argument)
+{
+  /* USER CODE BEGIN StartLED1Task */
+  /* Infinite loop */
+  for(;;)
+  {
+	circularLeftShiftLEDByte(&SLED);
+	ToggleLEDByte(&SLED);
+    osDelay(SLED.RefreshRateLED);
+  }
+  /* USER CODE END StartLED1Task */
+}
+
+/* USER CODE BEGIN Header_StartFlagBTN1Task */
+/**
+* @brief Function implementing the FlagBTN1Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartFlagBTN1Task */
+void StartFlagBTN1Task(void *argument)
+{
+  /* USER CODE BEGIN StartFlagBTN1Task */
+  /* Infinite loop */
+  for(;;)
+  {
+	  if(SUB.flagUB1 == 1){
+	    SLED.ModeLED1 ^= 1;
+	    SLED.ModeLED1?(SLED.stateLEDArray1 = 8):(SLED.stateLEDArray1 = 10);
+	    SUB.flagUB1 = 0;
+	  }
+	  osDelay(500);
+  }
+  /* USER CODE END StartFlagBTN1Task */
+}
+
+/* USER CODE BEGIN Header_StartUARTTask */
+/**
+* @brief Function implementing the UARTTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUARTTask */
+void StartUARTTask(void *argument)
+{
+  /* USER CODE BEGIN StartUARTTask */
+  static QUEUE_t msg;
+  /* Infinite loop */
+  for(;;)
+  {
+	osMessageQueueGet(UARTQueueHandle, &msg, 0, osWaitForever);
+	HAL_UART_Transmit_DMA(&huart2, (uint8_t*)msg.TxBuf, strlen(msg.TxBuf));
+    osDelay(1);
+  }
+  /* USER CODE END StartUARTTask */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6) {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
