@@ -34,7 +34,7 @@ typedef StaticQueue_t osStaticMessageQDef_t;
 typedef StaticSemaphore_t osStaticSemaphoreDef_t;
 /* USER CODE BEGIN PTD */
 typedef struct {
-	char TxBuf[128];
+	char TxBuf[50];
 } UARTTxQueue_t;
 typedef struct {
 	char RxBuf[16];
@@ -46,6 +46,7 @@ typedef struct {
 #define NUM_LED 4
 #define Shift_Amount 1
 #define RxBuf_SIZE 16
+#define TxBuf_SIZE 50
 #define MAX_TASKS 2
 #define NUM_COMMAND 1
 /* USER CODE END PD */
@@ -122,25 +123,25 @@ const osThreadAttr_t UARTRxTask_attributes = {
 };
 /* Definitions for UARTTXQueue */
 osMessageQueueId_t UARTTXQueueHandle;
-uint8_t UARTQueueBuffer[ 10 * sizeof( UARTTxQueue_t ) ];
-osStaticMessageQDef_t UARTQueueControlBlock;
+uint8_t UARTTXQueueBuffer[ 2 * sizeof( UARTTxQueue_t ) ];
+osStaticMessageQDef_t UARTTXQueueControlBlock;
 const osMessageQueueAttr_t UARTTXQueue_attributes = {
   .name = "UARTTXQueue",
-  .cb_mem = &UARTQueueControlBlock,
-  .cb_size = sizeof(UARTQueueControlBlock),
-  .mq_mem = &UARTQueueBuffer,
-  .mq_size = sizeof(UARTQueueBuffer)
-};
-/* Definitions for UARTRXQueue */
-osMessageQueueId_t UARTRXQueueHandle;
-uint8_t UARTTXQueueBuffer[ 10 * sizeof( UARTRxQueue_t ) ];
-osStaticMessageQDef_t UARTTXQueueControlBlock;
-const osMessageQueueAttr_t UARTRXQueue_attributes = {
-  .name = "UARTRXQueue",
   .cb_mem = &UARTTXQueueControlBlock,
   .cb_size = sizeof(UARTTXQueueControlBlock),
   .mq_mem = &UARTTXQueueBuffer,
   .mq_size = sizeof(UARTTXQueueBuffer)
+};
+/* Definitions for UARTRXQueue */
+osMessageQueueId_t UARTRXQueueHandle;
+uint8_t UARTRXQueueBuffer[ 2 * sizeof( UARTRxQueue_t ) ];
+osStaticMessageQDef_t UARTRXQueueControlBlock;
+const osMessageQueueAttr_t UARTRXQueue_attributes = {
+  .name = "UARTRXQueue",
+  .cb_mem = &UARTRXQueueControlBlock,
+  .cb_size = sizeof(UARTRXQueueControlBlock),
+  .mq_mem = &UARTRXQueueBuffer,
+  .mq_size = sizeof(UARTRXQueueBuffer)
 };
 /* Definitions for BtnMainSem */
 osSemaphoreId_t BtnMainSemHandle;
@@ -152,6 +153,8 @@ const osSemaphoreAttr_t BtnMainSem_attributes = {
 };
 /* USER CODE BEGIN PV */
 uint8_t RxBuf[RxBuf_SIZE];
+osEvent osTxBuf,osRxBuf;
+UARTTxQueue_t tempMsg;
 // Структура для хранения массивов команд и сообщений об ошибках
 static struct CommandCMD {
     const char *Name[NUM_COMMAND];
@@ -165,7 +168,7 @@ static struct CommandCMD {
         "Invalid command format. Command should be in the format 'F=x.x' with x in the range 0.1 to 9.9 Hz.\n"
     },
     {
-        "LED updates frequently: f=%.2f Hz\n"
+        "LED updates frequently: f=%.2f Hz \n"
     }
 };
 struct State_User_Buttons {
@@ -215,7 +218,7 @@ void ToggleLEDByte(struct Stored_LEDs* SLED)
 }
 
 void Command_Processing(struct CommandCMD* CMD, char *strRx, struct Stored_LEDs* SLED) {
-	UARTTxQueue_t msg;
+	memset(tempMsg.TxBuf, 0, sizeof(tempMsg.TxBuf));
 	int commandIndex = -1;
 
     // Преобразуйте все символы входной строки в нижний регистр для нечувствительности к регистру.
@@ -235,20 +238,19 @@ void Command_Processing(struct CommandCMD* CMD, char *strRx, struct Stored_LEDs*
     switch (commandIndex) {
     	case 0:{
         	char *endPtr;
-        	double frequency = strtod(strRx + 2, &endPtr);
+        	float frequency = strtod(strRx + 2, &endPtr);
         	if (endPtr != strRx + 2 && frequency >= 0.1 && frequency <= 9.9) {
-        		SLED->RefreshRateLED = (uint16_t)(frequency*1000);
-        		sprintf(msg.TxBuf, CMD->CompletedMessages[commandIndex], frequency);
-            return;
-            } else strcpy(msg.TxBuf, CMD->ErrorMessages[commandIndex]);
+        		//SLED->RefreshRateLED = (uint16_t)((1/frequency)*1000);
+        		sprintf(tempMsg.TxBuf, CMD->CompletedMessages[commandIndex], frequency);
+            } else strcpy(tempMsg.TxBuf, CMD->ErrorMessages[commandIndex]);
         } break;
 
         default:
             // Выведите текст ошибки, если ни одна из команд не совпала.
-        	strcpy(msg.TxBuf, "Invalid command. Supported commands: 'F=x.x'\n");
+        	strcpy(tempMsg.TxBuf, "Invalid command. Supported commands: 'F=x.x'\n");
         break;
     }
-    osMessageQueuePut(UARTTXQueueHandle, &msg, 0, osWaitForever);
+    osMessagePut(UARTTXQueueHandle, (uint32_t)tempMsg.TxBuf, osWaitForever);
 }
 
 /* USER CODE END 0 */
@@ -300,7 +302,7 @@ int main(void)
 
   /* Create the semaphores(s) */
   /* creation of BtnMainSem */
-  BtnMainSemHandle = osSemaphoreNew(1, 0, &BtnMainSem_attributes);
+  BtnMainSemHandle = osSemaphoreNew(1, 1, &BtnMainSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -312,10 +314,10 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of UARTTXQueue */
-  UARTTXQueueHandle = osMessageQueueNew (10, sizeof(UARTTxQueue_t), &UARTTXQueue_attributes);
+  UARTTXQueueHandle = osMessageQueueNew (2, sizeof(UARTTxQueue_t), &UARTTXQueue_attributes);
 
   /* creation of UARTRXQueue */
-  UARTRXQueueHandle = osMessageQueueNew (10, sizeof(UARTRxQueue_t), &UARTRXQueue_attributes);
+  UARTRXQueueHandle = osMessageQueueNew (2, sizeof(UARTRxQueue_t), &UARTRXQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -533,8 +535,8 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
 	if (huart->Instance == USART2)
 	{
-		osMessageQueuePut(UARTRXQueueHandle, &RxBuf, 0, 0);
-		memset (RxBuf, 0, RxBuf_SIZE);
+		osMessagePut(UARTRXQueueHandle, (uint32_t)&RxBuf, 0);
+		//memset (RxBuf, 0, RxBuf_SIZE);
 		HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) RxBuf, RxBuf_SIZE);
 		__HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
 	}
@@ -554,7 +556,7 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1000);
+    osDelay(1);
   }
   /* USER CODE END 5 */
 }
@@ -592,9 +594,9 @@ void StartBTNTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  if(osSemaphoreAcquire(BtnMainSemHandle, osWaitForever) == osOK){
+	  if(osSemaphoreWait(BtnMainSemHandle, osWaitForever) == osOK){
 	    SLED.ModeLED1 ^= 1;
-	    SLED.ModeLED1?(SLED.stateLEDArray1 = 8):(SLED.stateLEDArray1 = 10);
+	    SLED.ModeLED1?(SLED.stateLEDArray1 = 9):(SLED.stateLEDArray1 = 10);
 	  }
 	  osDelay(500);
   }
@@ -611,12 +613,14 @@ void StartBTNTask(void *argument)
 void StartUARTTxTask(void *argument)
 {
   /* USER CODE BEGIN StartUARTTxTask */
-  UARTTxQueue_t msg;
   /* Infinite loop */
   for(;;)
   {
-	osMessageQueueGet(UARTTXQueueHandle, &msg, 0, osWaitForever);
-	HAL_UART_Transmit_DMA(&huart2, (uint8_t*) msg.TxBuf, strlen(msg.TxBuf));
+	osTxBuf = osMessageGet(UARTTXQueueHandle, osWaitForever);
+	if (osTxBuf.status == osEventMessage)
+	{
+	    //HAL_UART_Transmit_DMA(&huart2, (uint8_t *)osTxBuf.value.p, strlen(osTxBuf.value.p));
+	}
 	osDelay(1);
   }
   /* USER CODE END StartUARTTxTask */
@@ -632,20 +636,22 @@ void StartUARTTxTask(void *argument)
 void StartUARTRxTask(void *argument)
 {
   /* USER CODE BEGIN StartUARTRxTask */
-  UARTRxQueue_t msg;
   /* Infinite loop */
   for(;;)
   {
-	  osMessageQueueGet(UARTRXQueueHandle, &msg, 0, osWaitForever);
-	  Command_Processing(&CMD, msg.RxBuf, &SLED);
-	  osDelay(1);
+	osRxBuf = osMessageGet(UARTRXQueueHandle, osWaitForever);
+	if (osRxBuf.status == osEventMessage)
+	{
+		Command_Processing(&CMD, osRxBuf.value.p, &SLED);
+	}
+	osDelay(1);
   }
   /* USER CODE END StartUARTRxTask */
 }
 
 /**
   * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM6 interrupt took place, inside
+  * @note   This function is called  when TIM1 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
   * a global variable "uwTick" used as application time base.
   * @param  htim : TIM handle
@@ -656,7 +662,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM6) {
+  if (htim->Instance == TIM1) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
