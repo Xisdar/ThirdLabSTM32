@@ -29,7 +29,6 @@
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
-typedef StaticTask_t osStaticThreadDef_t;
 /* USER CODE BEGIN PTD */
 typedef struct {
 	char TxBuf[50];
@@ -89,14 +88,9 @@ const osThreadAttr_t UARTTxTask_attributes = {
 };
 /* Definitions for UARTRxTask */
 osThreadId_t UARTRxTaskHandle;
-uint32_t UARTRxTaskBuffer[ 256 ];
-osStaticThreadDef_t UARTRxTaskControlBlock;
 const osThreadAttr_t UARTRxTask_attributes = {
   .name = "UARTRxTask",
-  .cb_mem = &UARTRxTaskControlBlock,
-  .cb_size = sizeof(UARTRxTaskControlBlock),
-  .stack_mem = &UARTRxTaskBuffer[0],
-  .stack_size = sizeof(UARTRxTaskBuffer),
+  .stack_size = 384 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for UARTTxQueue */
@@ -120,11 +114,9 @@ const osSemaphoreAttr_t UARTTxSem_attributes = {
   .name = "UARTTxSem"
 };
 /* USER CODE BEGIN PV */
-UARTTxQueue_t tempTx;
-UARTRxQueue_t tempRx;
 uint8_t RxBuf[RxBuf_SIZE];
 // Структура для хранения массивов команд и сообщений об ошибках
-static struct CommandCMD {
+struct CommandCMD {
     const char *Name[NUM_COMMAND];
     const char *ErrorMessages[NUM_COMMAND];
     const char *CompletedMessages[NUM_COMMAND];
@@ -591,10 +583,10 @@ void StartUARTTxTask(void *argument)
 {
   /* USER CODE BEGIN StartUARTTxTask */
   UARTTxQueue_t tempTxmsg;
-  memset(tempTxmsg.TxBuf, 0, sizeof(tempTxmsg.TxBuf));
   /* Infinite loop */
   for(;;)
   {
+	memset(tempTxmsg.TxBuf, 0, sizeof(tempTxmsg.TxBuf));
 	osMessageQueueGet(UARTTxQueueHandle, &tempTxmsg, 0, osWaitForever);
 	HAL_UART_Transmit_DMA(&huart2, (uint8_t*) tempTxmsg.TxBuf, strlen(tempTxmsg.TxBuf));
 	osSemaphoreAcquire(UARTTxSemHandle, osWaitForever);
@@ -615,14 +607,16 @@ void StartUARTRxTask(void *argument)
   /* USER CODE BEGIN StartUARTRxTask */
   UARTRxQueue_t tempRxmsg;
   UARTTxQueue_t tempTxmsg;
-  memset(tempRxmsg.RxBuf, 0, sizeof(tempRxmsg.RxBuf));
-  memset(tempTxmsg.TxBuf, 0, sizeof(tempTxmsg.TxBuf));
   /* Infinite loop */
   for(;;)
   {
+    memset(tempRxmsg.RxBuf, 0, sizeof(tempRxmsg.RxBuf));
+  	memset(tempTxmsg.TxBuf, 0, sizeof(tempTxmsg.TxBuf));
 	osMessageQueueGet(UARTRxQueueHandle, &tempRxmsg, 0, osWaitForever);
 	Command_Processing(&CMD, tempRxmsg.RxBuf, tempTxmsg.TxBuf, &SLED);
-	osMessageQueuePut(UARTTxQueueHandle, &tempTxmsg, 0, osWaitForever);
+	if(strlen(tempTxmsg.TxBuf) != 0){
+		osMessageQueuePut(UARTTxQueueHandle, &tempTxmsg, 0, osWaitForever);
+	}
 	osDelay(1);
   }
   /* USER CODE END StartUARTRxTask */
