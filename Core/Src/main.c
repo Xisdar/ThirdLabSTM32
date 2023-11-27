@@ -58,13 +58,6 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
-};
 /* Definitions for LED1Task */
 osThreadId_t LED1TaskHandle;
 const osThreadAttr_t LED1Task_attributes = {
@@ -147,7 +140,6 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-void StartDefaultTask(void *argument);
 void StartLED1Task(void *argument);
 void StartBTNTask(void *argument);
 void StartUARTTxTask(void *argument);
@@ -278,16 +270,13 @@ int main(void)
   UARTTxQueueHandle = osMessageQueueNew (10, sizeof(UARTTxQueue_t), &UARTTxQueue_attributes);
 
   /* creation of UARTRxQueue */
-  UARTRxQueueHandle = osMessageQueueNew (10, sizeof(UARTRxQueue_t), &UARTRxQueue_attributes);
+  UARTRxQueueHandle = osMessageQueueNew (16, sizeof(UARTRxQueue_t), &UARTRxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-
   /* creation of LED1Task */
   LED1TaskHandle = osThreadNew(StartLED1Task, NULL, &LED1Task_attributes);
 
@@ -512,24 +501,6 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 }
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
-  * @brief  Function implementing the defaultTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
-  /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END 5 */
-}
-
 /* USER CODE BEGIN Header_StartLED1Task */
 /**
 * @brief Function implementing the LED1Task thread.
@@ -539,7 +510,7 @@ void StartDefaultTask(void *argument)
 /* USER CODE END Header_StartLED1Task */
 void StartLED1Task(void *argument)
 {
-  /* USER CODE BEGIN StartLED1Task */
+  /* USER CODE BEGIN 5 */
   /* Infinite loop */
   for(;;)
   {
@@ -547,7 +518,7 @@ void StartLED1Task(void *argument)
 	ToggleLEDByte(&SLED);
     osDelay(SLED.RefreshRateLED);
   }
-  /* USER CODE END StartLED1Task */
+  /* USER CODE END 5 */
 }
 
 /* USER CODE BEGIN Header_StartBTNTask */
